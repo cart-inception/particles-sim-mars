@@ -166,3 +166,109 @@ class Vortex:
             self._drift_vel[1] -= 2 * (self._drift_vel[1] * self.cy / dist)
             self.cx *= world_radius / dist
             self.cy *= world_radius / dist
+
+
+# ------------------------------------------------------------------
+# Vortex–vortex interactions (Fujiwhara effect)
+# ------------------------------------------------------------------
+
+def process_vortex_interactions(vortices: list, dt: float) -> list:
+    """
+    Apply mutual Fujiwhara orbital drift between co-rotating vortex pairs,
+    and merge any pair whose centers fall within each other's combined core.
+
+    The Fujiwhara effect (observed in real tropical cyclones and dust devils):
+    two co-rotating vortices orbit their shared center of circulation.
+    Angular velocity Ω ≈ (Γ_a + Γ_b) / (4π d²), where d is separation.
+
+    When separation drops below (r_core_a + r_core_b) * 3 the vortices merge:
+      - Conservation of circulation:  Γ_merged = Γ_a + Γ_b  (minus ~15% heat loss)
+      - New core radius from area conservation: r_c = sqrt(r_a² + r_b²)
+      - Strength-weighted average for other parameters
+
+    Parameters
+    ----------
+    vortices : list of Vortex objects
+    dt       : physics timestep (seconds)
+
+    Returns
+    -------
+    vortices : list with merged vortices removed
+    """
+    if len(vortices) < 2:
+        return vortices
+
+    to_remove = set()
+
+    for i in range(len(vortices)):
+        if i in to_remove:
+            continue
+        for j in range(i + 1, len(vortices)):
+            if j in to_remove:
+                continue
+
+            va = vortices[i]
+            vb = vortices[j]
+
+            dx   = vb.cx - va.cx
+            dy   = vb.cy - va.cy
+            dist = np.sqrt(dx * dx + dy * dy)
+
+            if dist < 1e-3:
+                continue
+
+            total_circ = va.circulation + vb.circulation
+            w_a = va.circulation / total_circ
+            w_b = vb.circulation / total_circ
+
+            # Circulation-weighted shared centroid
+            cx_mid = va.cx * w_a + vb.cx * w_b
+            cy_mid = va.cy * w_a + vb.cy * w_b
+
+            # ---- Fujiwhara orbit ----------------------------------------
+            # Angular velocity capped to prevent instability at very close range
+            omega = np.clip(total_circ / (4.0 * np.pi * dist * dist), 0.0, 0.6)
+            angle = omega * dt
+
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+
+            # Rotate va around shared centroid
+            dxa = va.cx - cx_mid
+            dya = va.cy - cy_mid
+            va.cx = cx_mid + dxa * cos_a - dya * sin_a
+            va.cy = cy_mid + dxa * sin_a + dya * cos_a
+
+            # Rotate vb around shared centroid
+            dxb = vb.cx - cx_mid
+            dyb = vb.cy - cy_mid
+            vb.cx = cx_mid + dxb * cos_a - dyb * sin_a
+            vb.cy = cy_mid + dxb * sin_a + dyb * cos_a
+
+            # ---- Merge check --------------------------------------------
+            merge_threshold = (va.core_radius + vb.core_radius) * 3.0
+            if dist < merge_threshold:
+                # Move merged vortex to shared centroid
+                va.cx = cx_mid
+                va.cy = cy_mid
+
+                # Conserve angular momentum (minus ~15% dissipated as heat/turbulence)
+                va.circulation      = total_circ * 0.85
+                # New core area = sum of areas (conservation of solid-body region)
+                va.core_radius      = float(np.sqrt(va.core_radius ** 2 + vb.core_radius ** 2))
+                # Strength-weighted blend for the rest, with a slight intensity boost
+                va.updraft_strength  = (va.updraft_strength * w_a + vb.updraft_strength * w_b) * 1.25
+                va.inflow_strength   = (va.inflow_strength  * w_a + vb.inflow_strength  * w_b) * 1.15
+                va.influence_radius  = max(va.influence_radius, vb.influence_radius) * 1.2
+                va.height            = max(va.height, vb.height) * 1.1
+                # Blend drift velocities so the merged vortex moves naturally
+                va._drift_vel        = va._drift_vel * w_a + vb._drift_vel * w_b
+
+                to_remove.add(j)
+                print(
+                    f"[dust-devil] Vortex merge! "
+                    f"Γ={va.circulation:.0f} m²/s  "
+                    f"core={va.core_radius:.1f} m  "
+                    f"height={va.height:.0f} m"
+                )
+
+    return [v for i, v in enumerate(vortices) if i not in to_remove]

@@ -53,11 +53,13 @@ class ParticleSystem:
         self._rng = np.random.default_rng(rng_seed)
 
         # Core arrays — float32 for GL compatibility
-        self.positions  = np.zeros((n_particles, 3), dtype=np.float32)
-        self.velocities = np.zeros((n_particles, 3), dtype=np.float32)
-        self.colors     = np.zeros((n_particles, 3), dtype=np.float32)
+        self.positions   = np.zeros((n_particles, 3), dtype=np.float32)
+        self.velocities  = np.zeros((n_particles, 3), dtype=np.float32)
+        self.colors      = np.zeros((n_particles, 3), dtype=np.float32)
         # Per-particle size variation (used by renderer for point size)
-        self.sizes = np.ones(n_particles, dtype=np.float32)
+        self.sizes       = np.ones(n_particles, dtype=np.float32)
+        # Per-particle drag — fine particles float much longer than coarse grains
+        self._drag_coeffs = np.ones(n_particles, dtype=np.float32)
 
         self._init_particles()
 
@@ -79,17 +81,25 @@ class ParticleSystem:
         # Size variation: most particles are small dust, a few are larger grains
         self.sizes[:] = (self._rng.exponential(1.0, self.n) * 1.5 + 0.5).clip(0.5, 5.0).astype(np.float32)
 
+        # Drag scales inversely with size — mirrors the real physics of small grains
+        # having a high surface-area-to-mass ratio in Mars' thin atmosphere.
+        #   size 0.5 → drag 6.0 → terminal vel ≈ 0.6 m/s  (fine dust, floats)
+        #   size 1.0 → drag 3.0 → terminal vel ≈ 1.2 m/s  (medium)
+        #   size 3.0 → drag 1.0 → terminal vel ≈ 3.7 m/s  (coarse grain)
+        #   size 5.0 → drag 0.6 → terminal vel ≈ 6.2 m/s  (largest grains)
+        self._drag_coeffs = (3.0 / self.sizes).astype(np.float32)
+
         self._update_colors()
 
     # ------------------------------------------------------------------
 
-    def step(self, dt: float, vortices: List[Vortex]) -> None:
+    def step(self, dt: float, vortices: List[Vortex], ambient_wind=None) -> None:
         """
         Advance physics by dt seconds.
 
         Steps:
-          1. Accumulate wind from all vortices
-          2. Compute drag acceleration
+          1. Accumulate wind from all vortices + optional ambient wind
+          2. Compute per-particle drag acceleration
           3. Apply gravity
           4. Add turbulence
           5. Integrate velocity and position
@@ -100,10 +110,14 @@ class ParticleSystem:
         wind = np.zeros((self.n, 3), dtype=np.float32)
         for v in vortices:
             wind += v.wind_at(self.positions)
+        # Add background ambient wind if enabled
+        if ambient_wind is not None:
+            wind += ambient_wind.wind_at(self.positions)
 
-        # 2. Drag: a_drag = -drag_coeff * (v_particle - v_wind)
+        # 2. Per-particle drag: a_drag = -drag_coeff[i] * (v_particle - v_wind)
+        #    drag_coeffs vary by particle size — fine dust floats, coarse grains fall fast
         rel_vel = self.velocities - wind
-        accel = -DRAG_COEFF * rel_vel
+        accel = -(self._drag_coeffs[:, np.newaxis] * rel_vel)
 
         # 3. Gravity
         accel[:, 2] -= GRAVITY

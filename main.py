@@ -23,9 +23,10 @@ from pygame.locals import DOUBLEBUF, OPENGL, RESIZABLE
 from OpenGL.GL import *
 
 from simulation import ParticleSystem
-from vortex     import Vortex
+from vortex     import Vortex, process_vortex_interactions
 from camera     import OrbitCamera
 from renderer   import Renderer
+from wind       import AmbientWind
 
 
 # ── simulation constants ──────────────────────────────────────────────────────
@@ -56,6 +57,11 @@ INITIAL_VORTICES = [
 
 # Camera defaults (stored for reset)
 CAM_DEFAULTS = dict(azimuth=35.0, elevation=18.0, radius=130.0, target=(0.0, 0.0, 8.0))
+
+# ── ambient wind ─────────────────────────────────────────────────────────────────────────────
+AMBIENT_WIND_DIR   = 225.0   # degrees the wind blows FROM (225 = SW → pushes toward NE)
+AMBIENT_WIND_SPEED = 4.0     # m/s sustained base speed
+AMBIENT_WIND_GUSTS = 3.0     # m/s additional speed at gust peaks
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -97,10 +103,16 @@ def main() -> None:
 
     sim      = ParticleSystem(N_PARTICLES, spawn_radius=SPAWN_RADIUS)
     vortices = [Vortex(**cfg) for cfg in INITIAL_VORTICES]
+    ambient_wind = AmbientWind(
+        direction_deg=AMBIENT_WIND_DIR,
+        base_speed=AMBIENT_WIND_SPEED,
+        gust_amplitude=AMBIENT_WIND_GUSTS,
+    )
 
     # ── state flags ───────────────────────────────────────────────────────────
     paused          = False
     show_markers    = True
+    wind_enabled    = True
     clock           = pygame.time.Clock()
     accum_time      = 0.0   # accumulated time for fixed-step physics
 
@@ -112,7 +124,7 @@ def main() -> None:
     print(f"[dust-devil] {N_PARTICLES:,} particles | {len(vortices)} vortices | "
           f"{WINDOW_W}x{WINDOW_H}")
     print("[dust-devil] LMB drag=rotate  RMB drag=pan  Scroll=zoom  "
-          "R=reset  P=pause  V=markers  +/-=add/rm vortex  ESC=quit")
+          "R=reset  P=pause  V=markers  W=wind  +/-=add/rm vortex  ESC=quit")
 
     # ── main loop ─────────────────────────────────────────────────────────────
     running = True
@@ -139,6 +151,10 @@ def main() -> None:
                     print(f"[dust-devil] {'paused' if paused else 'resumed'}")
                 elif key == pygame.K_v:
                     show_markers = not show_markers
+                elif key == pygame.K_w:
+                    wind_enabled = not wind_enabled
+                    print(f"[dust-devil] Ambient wind {'ON' if wind_enabled else 'OFF'} "
+                          f"({ambient_wind.current_speed:.1f} m/s)")
                 elif key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
                     if len(vortices) < MAX_VORTICES:
                         vortices.append(make_random_vortex())
@@ -159,9 +175,11 @@ def main() -> None:
         if not paused:
             accum_time = min(accum_time + real_dt, 0.1)  # clamp to avoid spiral
             while accum_time >= PHYSICS_DT:
+                ambient_wind.update(PHYSICS_DT)
                 for v in vortices:
                     v.update(PHYSICS_DT)
-                sim.step(PHYSICS_DT, vortices)
+                vortices = process_vortex_interactions(vortices, PHYSICS_DT)
+                sim.step(PHYSICS_DT, vortices, ambient_wind if wind_enabled else None)
                 accum_time -= PHYSICS_DT
 
         # ── render ────────────────────────────────────────────────────────────

@@ -69,6 +69,7 @@ python main.py
 | **R** | Reset camera to default position |
 | **P** | Pause / unpause physics |
 | **V** | Toggle vortex column axis markers |
+| **W** | Toggle ambient background wind on / off |
 | **+** | Add a new random vortex (max 6) |
 | **−** | Remove the most recent vortex |
 | **ESC / Q** | Quit |
@@ -154,8 +155,56 @@ GROUND_RESTITUTION = 0.15   # 0=clay, 1=rubber ball
 | **`TURBULENCE`** | Higher values add chaotic jitter — good for a rougher, less perfect look |
 | **`GROUND_RESTITUTION`** | Higher values make particles bounce more when they hit the ground |
 
-### Particle colour gradient — `simulation.py`
+### Ambient wind — `main.py` + `wind.py`
 
+```python
+AMBIENT_WIND_DIR   = 225.0   # degrees the wind blows FROM (0=N, 90=E, 180=S, 270=W)
+AMBIENT_WIND_SPEED = 4.0     # m/s sustained base speed
+AMBIENT_WIND_GUSTS = 3.0     # m/s extra speed at gust peak
+```
+
+The wind blows uniformly across the scene, pushing all particles in the same direction. It uses a sinusoidal gust cycle with a random noise component so gusts feel irregular. Toggle it on/off at runtime with **W**.
+
+To simulate a calm day:
+```python
+AMBIENT_WIND_SPEED = 1.0
+AMBIENT_WIND_GUSTS = 0.5
+```
+To simulate a full Martian dust storm (haboob-level):
+```python
+AMBIENT_WIND_SPEED = 18.0
+AMBIENT_WIND_GUSTS = 8.0
+```
+
+### Vortex–vortex interactions (Fujiwhara effect)
+
+Two vortices that drift near each other will begin to orbit their shared centre of circulation — the real-world **Fujiwhara effect**, observed in tropical cyclones and large dust devils. When they close to within `(r_core_a + r_core_b) * 3` metres, they merge into one stronger vortex:
+
+- `Γ_merged = (Γ_a + Γ_b) × 0.85` — ~15% dissipated as turbulent heat
+- Core radius grows from area conservation: `r_c = √(r_a² + r_b²)`
+- Height and influence radius increase by ~10–20%
+- The terminal prints a merge event with the new vortex parameters
+
+To make merges happen faster, start vortices closer together in `INITIAL_VORTICES`, or reduce their `drift_speed` so they wander less and converge. To disable interactions entirely, set all vortices to start more than `influence_radius * 2` apart.
+
+### Particle suspension — `simulation.py`
+
+Particle drag now scales inversely with size, matching the physics of grains in a thin atmosphere:
+
+| Particle size | Drag coeff | Terminal velocity |
+|---|---|---|
+| 0.5 (fine dust) | 6.0 | ~0.6 m/s (floats for a long time) |
+| 1.0 (medium) | 3.0 | ~1.2 m/s |
+| 3.0 (coarse) | 1.0 | ~3.7 m/s |
+| 5.0 (large grain) | 0.6 | ~6.2 m/s (falls fast) |
+
+To make everything float longer, shift the size distribution toward smaller values by reducing the exponential scale in `_init_particles`:
+```python
+# In simulation.py _init_particles:
+self.sizes[:] = (self._rng.exponential(0.5, self.n) * 1.0 + 0.3).clip(0.3, 2.0)
+```
+
+### Particle colour gradient — `simulation.py`
 ```python
 COLOR_LOW  = np.array([0.76, 0.60, 0.42], dtype=np.float32)  # ground level colour
 COLOR_HIGH = np.array([0.72, 0.27, 0.08], dtype=np.float32)  # top of column colour
@@ -185,7 +234,8 @@ Change to `1920, 1080` for full-HD or `2560, 1440` for 1440p.
 particles-sim/
 ├── main.py          # Entry point — game loop, event handling, simulation wiring
 ├── simulation.py    # ParticleSystem class — vectorised NumPy physics
-├── vortex.py        # Vortex class — Rankine vortex wind field model
+├── vortex.py        # Vortex class + Fujiwhara interaction / merge function
+├── wind.py          # AmbientWind class — background wind with gust variation
 ├── renderer.py      # PyOpenGL rendering — sky, ground, particles, HUD
 ├── camera.py        # Orbit camera — mouse input, view/projection matrices
 └── requirements.txt
